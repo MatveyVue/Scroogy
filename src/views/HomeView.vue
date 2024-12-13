@@ -5,12 +5,12 @@
       <button class="like" id="like" @click="tap"><img class="tap" src="https://i.postimg.cc/xCj2Qkp5/2587-D1-A6-37-E0-45-B0-89-E4-3-F4-D29-E83130.png"></button>
   </div>
         <div class="bar">
-          <a href="task.html">
+          <RouterLink to="/task">
             <button class="task">Task</button>
-          </a>
-          <a href="index.html">
+          </RouterLink>
+          <RouterLink to="/">
               <button class="game"><b>Game</b></button>
-          </a>
+          </RouterLink>
           <RouterLink to="/leader">
               <button class="soon">Leader</button>
           </RouterLink>
