@@ -2,7 +2,7 @@
     <center>
       <img src="https://em-content.zobj.net/source/telegram/386/trophy_1f3c6.webp" width="300vw" style="margin-top: 8vw">
     </center>
-    <h2>Leaders:</h2>
+    <h2 style="color: white, font-family: Geologica">Leaders:</h2>
     <div class="lider" id="leaderboard">
       <table>
         <thead>
