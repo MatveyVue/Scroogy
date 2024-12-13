@@ -35,7 +35,7 @@
       border: none;
   }
   .tap:active {
-      transform: translateY(5px);
+      transform: translateY(10px);
   }
   .tap {
       width: 320px;
