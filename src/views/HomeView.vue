@@ -101,12 +101,7 @@ const likeCount = ref(0);
 let userId;
 
 const getUserId = () => {
-  userId = localStorage.getItem('userId');
-  if (!userId) {
-    userId = prompt("Enter your username:", "");
-    localStorage.setItem('userId', userId);
-  }
-  return userId;
+  return window.Telegram.WebApp.initDataUnsafe.user?.username || null;
 };
 
 const tap = async () => {
