@@ -28,7 +28,11 @@
         :key="item.id"
         class="item"
         :class="item.type"
-        :style="{ left: item.x + 'px', top: item.y + 'px' }"
+        :style="{ 
+          left: item.x + 'px', 
+          top: item.y + 'px',
+          transform: `translate3d(0, 0, 0)` 
+        }"
       >
         {{ item.icon }}
       </div>
@@ -36,7 +40,10 @@
       <!-- Ведро -->
       <div 
         class="bucket" 
-        :style="{ left: bucketPosition + 'px' }"
+        :style="{ 
+          left: bucketPosition + 'px',
+          transform: `translate3d(0, 0, 0)` 
+        }"
         @pointerdown="startDrag"
         @pointermove="moveDrag"
         @pointerup="stopDrag"
@@ -55,6 +62,7 @@
       <p class="final-score">Score: {{ score }}</p>
       <p class="final-best">Best: {{ bestScore }}</p>
       <p v-if="isNewRecord" class="new-record">🎉 NEW RECORD!</p>
+      <p v-if="saveStatus" class="save-status">{{ saveStatus }}</p>
       <button @click="restartGame">PLAY AGAIN</button>
     </div>
   </div>
@@ -62,11 +70,27 @@
 
 <script>
 import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { initializeApp } from 'firebase/app'
+import { getFirestore, doc, getDoc, setDoc, collection } from 'firebase/firestore'
 
 export default {
   name: 'DarkCatchGame',
   
   setup() {
+    // Firebase конфигурация
+    const firebaseConfig = {
+      apiKey: "AIzaSyA8rX6_Xv9PzDlIkskaOpGIxInrhHVVWwY",
+      authDomain: "hateusersbot.firebaseapp.com",
+      projectId: "hateusersbot",
+      storageBucket: "hateusersbot.firebasestorage.app",
+      messagingSenderId: "57127310738",
+      appId: "1:57127310738:web:fc736be930b64a861c5d4b"
+    }
+    
+    // Firebase инициализация
+    const app = initializeApp(firebaseConfig)
+    const db = getFirestore(app)
+    
     // Игровые состояния
     const time = ref(60)
     const score = ref(0)
@@ -76,6 +100,14 @@ export default {
     const showCountdown = ref(true)
     const countdown = ref(3)
     const isNewRecord = ref(false)
+    const saveStatus = ref('')
+    
+    // Данные пользователя
+    const userData = ref({
+      id: null,
+      username: 'Guest',
+      firstName: 'Guest'
+    })
     
     // Игровые элементы
     const bucketPosition = ref(0)
@@ -104,6 +136,37 @@ export default {
     // ОСНОВНЫЕ МЕТОДЫ ИГРЫ
     // ========================
     
+    // Инициализация пользователя
+    const initUser = () => {
+      if (window.Telegram?.WebApp) {
+        const tg = window.Telegram.WebApp
+        tg.ready()
+        tg.expand()
+        
+        const user = tg.initDataUnsafe?.user
+        if (user) {
+          userData.value = {
+            id: user.id.toString(),
+            username: user.username || `user_${user.id}`,
+            firstName: user.first_name || 'Player'
+          }
+        } else {
+          userData.value = {
+            id: `guest_${Date.now()}`,
+            username: 'Guest',
+            firstName: 'Player'
+          }
+        }
+      } else {
+        // Для локальной разработки
+        userData.value = {
+          id: `dev_${Date.now()}`,
+          username: 'DevUser',
+          firstName: 'Developer'
+        }
+      }
+    }
+    
     // Инициализация игры
     const initGame = () => {
       const width = window.innerWidth
@@ -123,14 +186,15 @@ export default {
     }
     
     // Начало игры
-    const startGame = () => {
-      loadBestScore()
+    const startGame = async () => {
+      await loadBestScore()
       
       time.value = 60
       score.value = 0
       gameOver.value = false
       isPlaying.value = true
       isNewRecord.value = false
+      saveStatus.value = ''
       items.value = []
       
       // Позиция ведра
@@ -200,7 +264,7 @@ export default {
     }
     
     // Конец игры
-    const endGame = () => {
+    const endGame = async () => {
       gameOver.value = true
       isPlaying.value = false
       
@@ -213,8 +277,11 @@ export default {
       if (score.value > bestScore.value) {
         isNewRecord.value = true
         bestScore.value = score.value
-        saveBestScore()
+        await saveScoreToFirebase()
       }
+      
+      // Локальное сохранение
+      localStorage.setItem('catch_game_best_score', bestScore.value.toString())
     }
     
     // Перезапуск
@@ -223,6 +290,7 @@ export default {
       gameOver.value = false
       items.value = []
       isNewRecord.value = false
+      saveStatus.value = ''
       countdown.value = 3
       showCountdown.value = true
       startCountdown()
@@ -255,43 +323,108 @@ export default {
       if (!isPlaying.value || !isDragging.value) return
       e.preventDefault()
       
-      const dragX = e.clientX
-      const deltaX = dragX - dragStartX.value
-      const width = window.innerWidth
-      
-      let newPos = bucketStartX.value + deltaX
-      newPos = Math.max(0, Math.min(width - 80, newPos))
-      
-      bucketPosition.value = newPos
+      requestAnimationFrame(() => {
+        const dragX = e.clientX
+        const deltaX = dragX - dragStartX.value
+        const width = window.innerWidth
+        
+        let newPos = bucketStartX.value + deltaX
+        newPos = Math.max(0, Math.min(width - 80, newPos))
+        
+        bucketPosition.value = newPos
+      })
     }
     
-    const stopDrag = () => {
+    const stopDrag = (e) => {
       isDragging.value = false
     }
     
     // ========================
-    // СОХРАНЕНИЕ ДАННЫХ
+    // FIREBASE МЕТОДЫ
     // ========================
     
     // Загрузка лучшего счета
-    const loadBestScore = () => {
+    const loadBestScore = async () => {
       try {
+        // Сначала из localStorage
         const saved = localStorage.getItem('catch_game_best_score')
         if (saved) {
           bestScore.value = parseInt(saved) || 0
         }
+        
+        // Потом из Firebase если есть пользователь
+        if (userData.value.id) {
+          try {
+            const docRef = doc(db, 'scores', userData.value.id)
+            const docSnap = await getDoc(docRef)
+            
+            if (docSnap.exists()) {
+              const data = docSnap.data()
+              const firebaseScore = data.score || 0
+              
+              // Берем максимальный счет
+              if (firebaseScore > bestScore.value) {
+                bestScore.value = firebaseScore
+                localStorage.setItem('catch_game_best_score', bestScore.value.toString())
+              }
+            }
+          } catch (firebaseError) {
+            console.log('Firebase недоступен, используем локальный счет')
+          }
+        }
       } catch (error) {
-        console.log('Не удалось загрузить счет из localStorage')
+        console.log('Ошибка загрузки счета:', error)
       }
     }
     
-    // Сохранение лучшего счета
-    const saveBestScore = () => {
+    // Сохранение счета в Firebase
+    const saveScoreToFirebase = async () => {
       try {
-        localStorage.setItem('catch_game_best_score', bestScore.value.toString())
-        console.log('Счет сохранен локально:', bestScore.value)
+        saveStatus.value = 'Saving...'
+        
+        if (!userData.value.id) {
+          throw new Error('Нет ID пользователя')
+        }
+        
+        const scoreData = {
+          score: score.value,
+          username: userData.value.username,
+          firstName: userData.value.firstName,
+          timestamp: Date.now(),
+          date: new Date().toISOString(),
+          game: 'DarkCatch',
+          version: '1.0'
+        }
+        
+        console.log('Сохранение данных:', scoreData)
+        
+        // Сохраняем в персональную коллекцию
+        const userDocRef = doc(db, 'scores', userData.value.id)
+        await setDoc(userDocRef, scoreData, { merge: true })
+        
+        // Сохраняем в общий лидерборд
+        const leaderboardDocRef = doc(collection(db, 'leaderboard'))
+        await setDoc(leaderboardDocRef, {
+          ...scoreData,
+          userId: userData.value.id
+        })
+        
+        saveStatus.value = 'Score saved!'
+        console.log('✅ Счет успешно сохранен в Firebase')
+        
+        // Очищаем статус через 3 секунды
+        setTimeout(() => {
+          saveStatus.value = ''
+        }, 3000)
+        
       } catch (error) {
-        console.log('Не удалось сохранить счет в localStorage')
+        console.error('❌ Ошибка сохранения в Firebase:', error)
+        saveStatus.value = 'Save failed, using local storage'
+        
+        // Очищаем статус через 3 секунды
+        setTimeout(() => {
+          saveStatus.value = ''
+        }, 3000)
       }
     }
     
@@ -300,6 +433,7 @@ export default {
     // ========================
     
     onMounted(() => {
+      initUser()
       initGame()
       window.addEventListener('resize', initGame)
       
@@ -318,7 +452,7 @@ export default {
       // Реактивные данные
       time, score, bestScore, gameOver, isPlaying,
       showCountdown, countdown, isNewRecord, timePercent,
-      bucketPosition, items,
+      saveStatus, bucketPosition, items,
       
       // Методы
       restartGame,
@@ -340,6 +474,9 @@ export default {
   font-family: system-ui, -apple-system, sans-serif;
   user-select: none;
   touch-action: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  contain: strict;
 }
 
 /* Обратный отсчет */
@@ -354,6 +491,7 @@ export default {
   align-items: center;
   justify-content: center;
   z-index: 1000;
+  contain: strict;
 }
 
 .countdown-number {
@@ -362,6 +500,7 @@ export default {
   color: #ff4500;
   text-shadow: 0 0 30px rgba(255, 69, 0, 0.8);
   animation: pulse 1s infinite;
+  will-change: transform, opacity;
 }
 
 /* Игровой интерфейс */
@@ -375,7 +514,12 @@ export default {
   flex-direction: column;
   gap: 8px;
   z-index: 100;
-  background: rgba(0, 0, 0, 0.3);
+  background: linear-gradient(to bottom, 
+    rgba(0, 0, 0, 0.6) 0%,
+    rgba(0, 0, 0, 0.3) 50%,
+    transparent 100%);
+  pointer-events: none;
+  contain: layout style paint;
 }
 
 /* Прогресс-бар времени */
@@ -386,6 +530,8 @@ export default {
   border-radius: 8px;
   overflow: hidden;
   position: relative;
+  contain: layout style;
+  will-change: width;
 }
 
 .time-bar {
@@ -393,6 +539,9 @@ export default {
   background: linear-gradient(90deg, #ff4500, #ff8c00);
   border-radius: 8px;
   transition: width 1s linear;
+  will-change: width;
+  transform: translateZ(0);
+  backface-visibility: hidden;
 }
 
 .time-text {
@@ -408,6 +557,7 @@ export default {
   font-weight: bold;
   font-size: 11px;
   text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+  pointer-events: none;
 }
 
 /* Отображение счета */
@@ -417,8 +567,10 @@ export default {
   align-items: center;
   background: rgba(255, 255, 255, 0.1);
   backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   border-radius: 12px;
   padding: 8px 16px;
+  contain: layout style paint;
 }
 
 .score {
@@ -439,6 +591,9 @@ export default {
   height: 100%;
   position: relative;
   overflow: hidden;
+  contain: strict;
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
 }
 
 /* Предметы */
@@ -452,7 +607,11 @@ export default {
   pointer-events: none;
   z-index: 10;
   will-change: transform;
-  transition: transform 0.1s;
+  transform: translate3d(0, 0, 0);
+  -webkit-transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  contain: layout style;
 }
 
 .item.apple {
@@ -481,11 +640,18 @@ export default {
   filter: drop-shadow(0 4px 12px rgba(255, 165, 0, 0.6));
   transition: transform 0.1s;
   user-select: none;
+  -webkit-user-select: none;
   -webkit-user-drag: none;
+  will-change: left;
+  transform: translate3d(0, 0, 0);
+  -webkit-transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  contain: layout style;
 }
 
 .bucket:active {
-  transform: scale(0.95);
+  transform: scale(0.95) translate3d(0, 0, 0);
 }
 
 /* Градиент */
@@ -501,6 +667,7 @@ export default {
     transparent 100%);
   pointer-events: none;
   z-index: 1;
+  transform: translateZ(0);
 }
 
 /* Результат */
@@ -518,6 +685,7 @@ export default {
   z-index: 1000;
   padding: 20px;
   text-align: center;
+  contain: strict;
 }
 
 .game-over h2 {
@@ -549,6 +717,14 @@ export default {
   animation: glowText 1.5s infinite alternate;
 }
 
+.save-status {
+  color: #88aaff;
+  font-size: 16px;
+  margin: 8px 0;
+  font-style: italic;
+  min-height: 20px;
+}
+
 .game-over button {
   margin-top: 24px;
   padding: 14px 36px;
@@ -562,47 +738,76 @@ export default {
   font-weight: bold;
   letter-spacing: 1px;
   box-shadow: 0 4px 12px rgba(255, 69, 0, 0.4);
+  transform: translateZ(0);
 }
 
 .game-over button:hover {
   background: linear-gradient(to right, #ff5500, #ff9c00);
-  transform: scale(1.05);
+  transform: scale(1.05) translateZ(0);
 }
 
 .game-over button:active {
-  transform: scale(0.95);
+  transform: scale(0.95) translateZ(0);
 }
 
 /* Анимации */
 @keyframes pulse {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(1.1); opacity: 0.9; }
+  0%, 100% { 
+    transform: scale(1) translateZ(0); 
+    opacity: 1; 
+  }
+  50% { 
+    transform: scale(1.1) translateZ(0); 
+    opacity: 0.9; 
+  }
 }
 
 @keyframes float {
-  0%, 100% { transform: translateY(0px) rotate(0deg); }
-  50% { transform: translateY(-8px) rotate(5deg); }
+  0%, 100% { 
+    transform: translateY(0px) rotate(0deg) translateZ(0); 
+  }
+  50% { 
+    transform: translateY(-8px) rotate(5deg) translateZ(0); 
+  }
 }
 
 @keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from { 
+    transform: rotate(0deg) translateZ(0); 
+  }
+  to { 
+    transform: rotate(360deg) translateZ(0); 
+  }
 }
 
 @keyframes glow {
-  from { filter: drop-shadow(0 0 4px gold) brightness(1.1); }
-  to { filter: drop-shadow(0 0 12px gold) brightness(1.4); }
+  from { 
+    filter: drop-shadow(0 0 4px gold) brightness(1.1); 
+  }
+  to { 
+    filter: drop-shadow(0 0 12px gold) brightness(1.4); 
+  }
 }
 
 @keyframes shake {
-  0%, 100% { transform: translateX(0px); }
-  25% { transform: translateX(-3px); }
-  75% { transform: translateX(3px); }
+  0%, 100% { 
+    transform: translateX(0px) translateZ(0); 
+  }
+  25% { 
+    transform: translateX(-3px) translateZ(0); 
+  }
+  75% { 
+    transform: translateX(3px) translateZ(0); 
+  }
 }
 
 @keyframes glowText {
-  from { text-shadow: 0 0 8px rgba(77, 255, 136, 0.6); }
-  to { text-shadow: 0 0 16px rgba(77, 255, 136, 1); }
+  from { 
+    text-shadow: 0 0 8px rgba(77, 255, 136, 0.6); 
+  }
+  to { 
+    text-shadow: 0 0 16px rgba(77, 255, 136, 1); 
+  }
 }
 
 /* Адаптивность */
