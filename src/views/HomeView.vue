@@ -9,8 +9,10 @@
     <div class="game-ui">
       <!-- Время и счет -->
       <div class="stats">
+      <center>
         <div class="time">{{ time }}s</div>
-        <div class="score">{{ score }}</div>
+        <div style="font-size: 36px;" class="score">{{ score }}</div>
+      </center>
       </div>
       
       <!-- Прогресс-бар -->
@@ -60,7 +62,7 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 
 // Реактивные переменные
-const time = ref(60)
+const time = ref(30)
 const score = ref(0)
 const gameOver = ref(false)
 const showCountdown = ref(true)
@@ -75,13 +77,13 @@ const bucketStartX = ref(0)
 
 // Предметы
 const itemTypes = [
-  { type: 'apple', icon: '🍎', value: 10 },
-  { type: 'star', icon: '⭐', value: 20 },
+  { type: 'apple', icon: '🍎', value: 6 },
+  { type: 'star', icon: '⭐', value: 9 },
   { type: 'bomb', icon: '💣', value: -15 }
 ]
 
 // Компьютед
-const timePercent = computed(() => (time.value / 60) * 100)
+const timePercent = computed(() => (time.value / 30) * 50)
 
 // Инициализация
 const initGame = () => {
@@ -112,7 +114,7 @@ const startCountdown = () => {
 
 // Начало игры
 const startGame = () => {
-  time.value = 60
+  time.value = 30
   score.value = 0
   gameOver.value = false
   items.value = []
@@ -146,7 +148,7 @@ const createItem = () => {
     value: type.value,
     x: Math.random() * (width - 60),
     y: -60,
-    speed: 2 + Math.random() * 2
+    speed: 3 + Math.random() * 3
   })
 }
 
@@ -287,23 +289,37 @@ onUnmounted(() => {
   margin-bottom: 8px;
 }
 
-.time, .score {
-  font-size: 28px;
+.time {
+  font-size: 20px;
   font-weight: bold;
   color: white;
   text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+  position: absolute;
+  top: 50px;
+  left: 50%;
+  transform: translateX(-50%);
 }
 
 .score {
-  color: #4dff88;
+  font-size: 20px;
+  font-weight: bold;
+  color: #ffffff;
+  position: absolute;
+  top: 100px;
+  left: 50%;
+  transform: translateX(-50%);
 }
 
 .time-bar {
-  width: 100%;
+  width: 300px;
   height: 6px;
-  background: linear-gradient(90deg, #ff4500, #ff8c00);
+  background: white;
   border-radius: 3px;
   transition: width 1s linear;
+  position: absolute;
+  top: 80px;
+  left: 50%;
+  transform: translateX(-50%);
 }
 
 /* Игровое поле */
@@ -340,8 +356,8 @@ onUnmounted(() => {
 .bucket {
   position: absolute;
   bottom: 80px;
-  width: 70px;
-  height: 70px;
+  width: 80px;
+  height: 80px;
   font-size: 50px;
   text-align: center;
   line-height: 70px;
