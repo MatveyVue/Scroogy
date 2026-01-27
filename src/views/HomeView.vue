@@ -108,12 +108,14 @@ import {
 const firebaseConfig = {
   apiKey: "AIzaSyA8rX6_Xv9PzDlIkskaOpGIxInrhHVVWwY",
   authDomain: "hateusersbot.firebaseapp.com",
+  databaseURL: "https://hateusersbot-default-rtdb.firebaseio.com",
   projectId: "hateusersbot",
   storageBucket: "hateusersbot.firebasestorage.app",
   messagingSenderId: "57127310738",
-  appId: "1:57127310738:web:fc736be930b64a861c5d4b"
-}
-
+  appId: "1:57127310738:web:fc736be930b64a861c5d4b",
+  measurementId: "G-9ZDBMXC2CL"
+};
+  
 // Инициализация Firebase
 let app
 let db
