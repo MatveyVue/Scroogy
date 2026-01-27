@@ -27,6 +27,11 @@
       <div class="user-info" v-if="userData.username && userData.username !== 'Guest'">
         Player: {{ userData.username }}
       </div>
+      
+      <!-- Статус подключения -->
+      <div class="connection-status" :class="{ connected: isConnected }">
+        {{ isConnected ? '🟢 Online' : '🔴 Offline' }}
+      </div>
     </div>
     
     <!-- Игровое поле -->
@@ -76,6 +81,9 @@
       <p class="final-score">Score: {{ score }}</p>
       <p class="best-record" v-if="bestScore > 0">Best: {{ bestScore }}</p>
       <p class="new-record" v-if="isNewRecord && score > 0">🎉 NEW RECORD!</p>
+      <p class="save-status" :class="{ success: saveSuccess, error: saveError }">
+        {{ saveStatus }}
+      </p>
       <button @click="restartGame">PLAY AGAIN</button>
     </div>
   </div>
@@ -107,8 +115,15 @@ const firebaseConfig = {
 }
 
 // Инициализация Firebase
-const app = initializeApp(firebaseConfig)
-const db = getFirestore(app)
+let app
+let db
+try {
+  app = initializeApp(firebaseConfig)
+  db = getFirestore(app)
+  console.log('Firebase initialized successfully')
+} catch (error) {
+  console.error('Firebase initialization error:', error)
+}
 
 // Реактивные переменные
 const time = ref(30)
@@ -118,6 +133,10 @@ const gameOver = ref(false)
 const isNewRecord = ref(false)
 const showCountdown = ref(true)
 const countdown = ref(3)
+const isConnected = ref(false)
+const saveStatus = ref('')
+const saveSuccess = ref(false)
+const saveError = ref(false)
 
 // Позиции ведра и касания
 const bucketPosition = ref({ x: 0, y: 0 })
@@ -144,6 +163,29 @@ const itemTypes = [
 // Компьютед
 const timePercent = computed(() => (time.value / 30) * 50)
 
+// Тест подключения к Firebase
+const testFirebaseConnection = async () => {
+  try {
+    console.log('Testing Firebase connection...')
+    
+    // Пробуем записать тестовый документ
+    const testRef = doc(collection(db, 'test_connection'))
+    await setDoc(testRef, {
+      test: 'connection_test',
+      timestamp: new Date().toISOString(),
+      success: true
+    })
+    
+    console.log('✅ Firebase connection successful!')
+    isConnected.value = true
+    return true
+  } catch (error) {
+    console.error('❌ Firebase connection failed:', error)
+    isConnected.value = false
+    return false
+  }
+}
+
 // Инициализация пользователя из Telegram
 const initUser = async () => {
   console.log('Initializing user...')
@@ -157,31 +199,26 @@ const initUser = async () => {
       tg.ready()
       tg.expand() // Разворачиваем на весь экран
       
-      console.log('Telegram WebApp initialized:', tg)
+      console.log('Telegram WebApp initialized')
       
       // Получаем данные пользователя
       const initData = tg.initDataUnsafe
-      console.log('Telegram init data:', initData)
       
       if (initData && initData.user) {
         const user = initData.user
         userData.value = {
           id: user.id.toString(),
           username: user.username || `user_${user.id}`,
-          firstName: user.first_name || 'Player',
-          languageCode: user.language_code || 'en'
+          firstName: user.first_name || 'Player'
         }
         console.log('User data from Telegram:', userData.value)
         
-        // После получения данных пользователя загружаем его лучший счет
+        // Загружаем лучший счет
         await loadBestScore()
       } else {
-        // Если нет данных пользователя Telegram
-        console.log('No Telegram user data, creating guest')
         createGuestUser()
       }
     } else {
-      console.log('No Telegram WebApp, running in browser')
       createGuestUser()
     }
   } catch (error) {
@@ -192,13 +229,13 @@ const initUser = async () => {
 
 // Создание гостевого пользователя
 const createGuestUser = () => {
-  const guestId = `guest_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+  const guestId = `guest_${Date.now()}`
   userData.value = {
     id: guestId,
-    username: `Guest_${Math.floor(Math.random() * 10000)}`,
+    username: `Guest_${Math.floor(Math.random() * 1000)}`,
     firstName: 'Guest'
   }
-  console.log('Guest user created:', userData.value)
+  console.log('Guest user created:', userData.value.username)
 }
 
 // Инициализация игры
@@ -235,10 +272,10 @@ const startCountdown = () => {
 
 // Загрузка лучшего счета
 const loadBestScore = async () => {
-  console.log('Loading best score for user:', userData.value.id)
+  console.log('Loading best score for user:', userData.value.username)
   try {
-    // Сначала пробуем из localStorage
-    const savedScore = localStorage.getItem(`catch_game_best_score_${userData.value.id}`)
+    // Сначала из localStorage
+    const savedScore = localStorage.getItem(`best_score_${userData.value.id}`)
     if (savedScore) {
       const parsedScore = parseInt(savedScore)
       if (!isNaN(parsedScore)) {
@@ -247,10 +284,10 @@ const loadBestScore = async () => {
       }
     }
     
-    // Затем из Firebase для данного пользователя
+    // Затем из Firebase (только для реальных пользователей)
     if (userData.value.id && !userData.value.id.startsWith('guest_')) {
       try {
-        const docRef = doc(db, 'users', userData.value.id)
+        const docRef = doc(db, 'players', userData.value.id)
         const docSnap = await getDoc(docRef)
         
         if (docSnap.exists()) {
@@ -259,16 +296,12 @@ const loadBestScore = async () => {
           
           if (data.bestScore && data.bestScore > bestScore.value) {
             bestScore.value = data.bestScore
-            // Обновляем localStorage
-            localStorage.setItem(`catch_game_best_score_${userData.value.id}`, bestScore.value.toString())
+            localStorage.setItem(`best_score_${userData.value.id}`, bestScore.value.toString())
             console.log('Updated from Firebase:', bestScore.value)
           }
-        } else {
-          console.log('No user document in Firebase, creating new')
         }
       } catch (firebaseError) {
-        console.error('Firebase error loading score:', firebaseError)
-        // Игнорируем ошибки Firebase, продолжаем с localStorage
+        console.log('Firebase load skipped:', firebaseError.message)
       }
     }
   } catch (error) {
@@ -276,91 +309,109 @@ const loadBestScore = async () => {
   }
 }
 
-// Сохранение счета в Firebase
+// Сохранение счета в Firebase - УПРОЩЕННАЯ И РАБОЧАЯ ВЕРСИЯ
 const saveScoreToFirebase = async () => {
-  console.log('Saving score to Firebase...')
+  console.log('=== START SAVE TO FIREBASE ===')
+  console.log('User:', userData.value.username, 'Score:', score.value)
   
-  if (!userData.value.id) {
-    console.log('No user ID, cannot save to Firebase')
+  saveStatus.value = 'Saving...'
+  saveSuccess.value = false
+  saveError.value = false
+  
+  // Для гостей - только localStorage
+  if (userData.value.id.startsWith('guest_')) {
+    console.log('Guest user, saving to localStorage only')
+    localStorage.setItem(`best_score_${userData.value.id}`, score.value.toString())
+    saveStatus.value = 'Score saved locally'
+    saveSuccess.value = true
     return
   }
   
-  // Для гостей не сохраняем в Firebase, только localStorage
-  if (userData.value.id.startsWith('guest_')) {
-    console.log('Guest user, saving to localStorage only')
-    localStorage.setItem(`catch_game_best_score_${userData.value.id}`, score.value.toString())
+  // Проверяем подключение к Firebase
+  if (!db) {
+    console.log('Firebase not initialized')
+    saveStatus.value = 'Connection error'
+    saveError.value = true
     return
   }
   
   try {
-    // Подготовка данных пользователя
-    const userDocData = {
+    // 1. Создаем или обновляем документ пользователя в коллекции 'players'
+    const playerRef = doc(db, 'players', userData.value.id)
+    
+    const playerData = {
       userId: userData.value.id,
-      username: userData.value.username,
-      firstName: userData.value.firstName || 'Unknown',
-      bestScore: score.value,
+      username: userData.value.username || 'Anonymous',
+      firstName: userData.value.firstName || 'Player',
+      bestScore: Math.max(score.value, bestScore.value),
       lastScore: score.value,
-      lastPlayed: serverTimestamp(),
-      updatedAt: serverTimestamp()
+      lastPlayed: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     }
     
-    // Добавляем gamesPlayed и totalScore если есть
-    const userRef = doc(db, 'users', userData.value.id)
-    const userSnap = await getDoc(userRef)
+    console.log('Saving player data:', playerData)
     
-    if (userSnap.exists()) {
-      const existingData = userSnap.data()
-      userDocData.gamesPlayed = (existingData.gamesPlayed || 0) + 1
-      userDocData.totalScore = (existingData.totalScore || 0) + score.value
+    // Получаем текущие данные для обновления статистики
+    const playerSnap = await getDoc(playerRef)
+    
+    if (playerSnap.exists()) {
+      const existing = playerSnap.data()
+      playerData.gamesPlayed = (existing.gamesPlayed || 0) + 1
+      playerData.totalScore = (existing.totalScore || 0) + score.value
     } else {
-      userDocData.gamesPlayed = 1
-      userDocData.totalScore = score.value
-      userDocData.createdAt = serverTimestamp()
+      playerData.gamesPlayed = 1
+      playerData.totalScore = score.value
+      playerData.createdAt = new Date().toISOString()
     }
     
-    // Сохраняем/обновляем данные пользователя
-    console.log('Saving user data:', userDocData)
-    await setDoc(userRef, userDocData, { merge: true })
+    // Сохраняем данные игрока
+    await setDoc(playerRef, playerData, { merge: true })
+    console.log('✅ Player data saved successfully')
     
-    // Сохраняем запись о текущей игре в коллекцию scores
-    const scoreData = {
-      userId: userData.value.id,
-      username: userData.value.username,
+    // 2. Сохраняем запись о игре в коллекцию 'games'
+    const gameData = {
+      playerId: userData.value.id,
+      playerName: userData.value.username || 'Anonymous',
       score: score.value,
-      timestamp: Date.now(),
       date: new Date().toISOString(),
-      createdAt: serverTimestamp()
+      timestamp: Date.now()
     }
     
-    console.log('Saving score record:', scoreData)
-    await addDoc(collection(db, 'scores'), scoreData)
+    console.log('Saving game record:', gameData)
+    await addDoc(collection(db, 'games'), gameData)
+    console.log('✅ Game record saved successfully')
     
-    // Также сохраняем в историю пользователя
-    const userHistoryRef = collection(db, `users/${userData.value.id}/history`)
-    await addDoc(userHistoryRef, scoreData)
+    // 3. Сохраняем в localStorage
+    localStorage.setItem(`best_score_${userData.value.id}`, score.value.toString())
     
-    // Сохраняем в localStorage
-    localStorage.setItem(`catch_game_best_score_${userData.value.id}`, score.value.toString())
-    
-    console.log('Score successfully saved to Firebase!')
+    // Обновляем UI статус
+    saveStatus.value = 'Score saved to database!'
+    saveSuccess.value = true
+    console.log('=== SAVE COMPLETED SUCCESSFULLY ===')
     
   } catch (error) {
-    console.error('Error saving score to Firebase:', error)
-    console.error('Error details:', error.message, error.code)
+    console.error('❌ Error saving to Firebase:', error)
+    console.error('Error details:', error.message)
     
-    // В случае ошибки Firebase, хотя бы сохраняем в localStorage
-    localStorage.setItem(`catch_game_best_score_${userData.value.id}`, score.value.toString())
+    // Fallback: сохраняем в localStorage
+    localStorage.setItem(`best_score_${userData.value.id}`, score.value.toString())
+    
+    saveStatus.value = 'Saved locally (offline)'
+    saveError.value = true
   }
 }
 
 // Начало игры
 const startGame = async () => {
-  console.log('Starting game for user:', userData.value.username)
+  console.log('Starting game for:', userData.value.username)
   
   time.value = 30
   score.value = 0
   gameOver.value = false
   isNewRecord.value = false
+  saveStatus.value = ''
+  saveSuccess.value = false
+  saveError.value = false
   items.value = []
   
   initGame()
@@ -371,7 +422,7 @@ const startGame = async () => {
     if (time.value <= 0) endGame()
   }, 1000))
   
-  // Генерация предметов (чаще для сложности)
+  // Генерация предметов
   timers.push(setInterval(createItem, 600))
   
   // Игровой цикл
@@ -392,7 +443,7 @@ const createItem = () => {
     value: type.value,
     x: Math.random() * (width - 60),
     y: -60,
-    speed: 4 + Math.random() * 4 // Увеличенная скорость
+    speed: 4 + Math.random() * 4
   })
 }
 
@@ -404,7 +455,6 @@ const updateGame = () => {
   const updatedItems = []
   
   items.value.forEach(item => {
-    // Ускоренное падение
     item.y += item.speed * 1.2
     
     // Столкновение с ведром
@@ -422,19 +472,16 @@ const updateGame = () => {
       bottom: item.y + 60
     }
     
-    // Проверка столкновения
     if (itemRect.left < bucketRect.right &&
         itemRect.right > bucketRect.left &&
         itemRect.top < bucketRect.bottom &&
         itemRect.bottom > bucketRect.top) {
       
       score.value += item.value
-      // Ограничиваем счет снизу
       if (score.value < 0) score.value = 0
       return
     }
     
-    // Оставляем на экране
     if (item.y < screenHeight + 100) {
       updatedItems.push(item)
     }
@@ -445,28 +492,27 @@ const updateGame = () => {
 
 // Конец игры
 const endGame = async () => {
-  console.log('Game over. Score:', score.value, 'Best:', bestScore.value)
+  console.log('Game over. Score:', score.value)
   
   gameOver.value = true
   clearTimers()
   
-  // Проверяем, новый ли это рекорд
+  // Проверяем новый рекорд
   if (score.value > bestScore.value) {
-    console.log('New record detected!')
+    console.log('🎉 New record! Old:', bestScore.value, 'New:', score.value)
     isNewRecord.value = true
     bestScore.value = score.value
     
-    try {
-      await saveScoreToFirebase()
-    } catch (error) {
-      console.error('Error saving new record:', error)
-    }
+    // Сохраняем в Firebase
+    await saveScoreToFirebase()
+  } else {
+    saveStatus.value = 'Game completed'
+    saveSuccess.value = true
   }
 }
 
 // Перезапуск
 const restartGame = () => {
-  console.log('Restarting game...')
   clearTimers()
   gameOver.value = false
   items.value = []
@@ -476,7 +522,7 @@ const restartGame = () => {
   setTimeout(startCountdown, 500)
 }
 
-// Управление - можно водить в любом месте экрана
+// Управление ведром
 const startDrag = (e) => {
   if (gameOver.value) return
   isDragging.value = true
@@ -492,29 +538,23 @@ const stopDrag = () => {
   isDragging.value = false
 }
 
-// Обработка касаний
 const handleTouch = (e) => {
   if (gameOver.value) return
-  
   e.preventDefault()
   const touch = e.touches[0]
   if (!touch) return
-  
   updateBucketPosition(touch.clientX, touch.clientY)
 }
 
-// Обновление позиции ведра
 const updateBucketPosition = (clientX, clientY) => {
   touchPosition.value = { x: clientX, y: clientY }
   
   const width = window.innerWidth
   const height = window.innerHeight
   
-  // Ведро следует за пальцем/курсором
-  let newX = clientX - 40 // Центрирование
+  let newX = clientX - 40
   let newY = clientY - 40
   
-  // Ограничиваем в пределах экрана
   newX = Math.max(10, Math.min(width - 90, newX))
   newY = Math.max(10, Math.min(height - 90, newY))
   
@@ -523,24 +563,27 @@ const updateBucketPosition = (clientX, clientY) => {
 
 // Жизненный цикл
 onMounted(async () => {
-  console.log('Game mounted')
+  console.log('=== GAME STARTING ===')
   
   // Инициализируем пользователя
   await initUser()
+  
+  // Тестируем подключение к Firebase
+  if (db) {
+    await testFirebaseConnection()
+  }
   
   // Инициализируем игру
   initGame()
   window.addEventListener('resize', initGame)
   
-  // Даем время на инициализацию и начинаем отсчет
+  // Начинаем отсчет
   setTimeout(() => {
-    console.log('Starting countdown...')
     startCountdown()
   }, 1000)
 })
 
 onUnmounted(() => {
-  console.log('Game unmounted')
   clearTimers()
   window.removeEventListener('resize', initGame)
 })
@@ -642,6 +685,21 @@ onUnmounted(() => {
   background: rgba(0, 0, 0, 0.5);
   padding: 4px 10px;
   border-radius: 12px;
+}
+
+.connection-status {
+  position: absolute;
+  top: 10px;
+  left: 15px;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 12px;
+  background: rgba(255, 0, 0, 0.3);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.connection-status.connected {
+  background: rgba(0, 255, 0, 0.3);
 }
 
 .time-bar {
@@ -774,6 +832,24 @@ onUnmounted(() => {
   animation: glowText 1s infinite alternate;
 }
 
+.save-status {
+  margin: 10px 0;
+  padding: 8px 16px;
+  border-radius: 10px;
+  font-size: 14px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.save-status.success {
+  background: rgba(0, 255, 0, 0.2);
+  color: #4dff88;
+}
+
+.save-status.error {
+  background: rgba(255, 0, 0, 0.2);
+  color: #ff6b6b;
+}
+
 .game-over button {
   margin-top: 24px;
   padding: 14px 36px;
@@ -854,6 +930,11 @@ onUnmounted(() => {
     top: 5px;
     right: 10px;
     padding: 3px 8px;
+  }
+  .connection-status {
+    font-size: 11px;
+    top: 5px;
+    left: 10px;
   }
 }
 </style>
