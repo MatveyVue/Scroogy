@@ -22,6 +22,11 @@
       <div class="best-score" v-if="bestScore > 0">
         Best: {{ bestScore }}
       </div>
+      
+      <!-- Информация о пользователе -->
+      <div class="user-info" v-if="userData.username && userData.username !== 'Guest'">
+        Player: {{ userData.username }}
+      </div>
     </div>
     
     <!-- Игровое поле -->
@@ -86,13 +91,8 @@ import {
   doc, 
   getDoc, 
   setDoc, 
-  collection, 
-  query, 
-  where, 
-  orderBy, 
-  limit,
+  collection,
   addDoc,
-  updateDoc,
   serverTimestamp 
 } from 'firebase/firestore'
 
@@ -145,37 +145,60 @@ const itemTypes = [
 const timePercent = computed(() => (time.value / 30) * 50)
 
 // Инициализация пользователя из Telegram
-const initUser = () => {
-  if (window.Telegram?.WebApp) {
-    const tg = window.Telegram.WebApp
-    tg.ready()
-    tg.expand()
-    
-    const user = tg.initDataUnsafe?.user
-    if (user) {
-      userData.value = {
-        id: user.id.toString(),
-        username: user.username || `user_${user.id}`,
-        firstName: user.first_name || 'Player'
+const initUser = async () => {
+  console.log('Initializing user...')
+  
+  try {
+    // Проверяем, есть ли Telegram WebApp
+    if (window.Telegram && window.Telegram.WebApp) {
+      const tg = window.Telegram.WebApp
+      
+      // Инициализируем приложение
+      tg.ready()
+      tg.expand() // Разворачиваем на весь экран
+      
+      console.log('Telegram WebApp initialized:', tg)
+      
+      // Получаем данные пользователя
+      const initData = tg.initDataUnsafe
+      console.log('Telegram init data:', initData)
+      
+      if (initData && initData.user) {
+        const user = initData.user
+        userData.value = {
+          id: user.id.toString(),
+          username: user.username || `user_${user.id}`,
+          firstName: user.first_name || 'Player',
+          languageCode: user.language_code || 'en'
+        }
+        console.log('User data from Telegram:', userData.value)
+        
+        // После получения данных пользователя загружаем его лучший счет
+        await loadBestScore()
+      } else {
+        // Если нет данных пользователя Telegram
+        console.log('No Telegram user data, creating guest')
+        createGuestUser()
       }
     } else {
-      // Если нет данных пользователя, создаем гостя
-      userData.value = {
-        id: `guest_${Date.now()}`,
-        username: `Guest_${Math.floor(Math.random() * 1000)}`,
-        firstName: 'Guest'
-      }
+      console.log('No Telegram WebApp, running in browser')
+      createGuestUser()
     }
-  } else {
-    // Для разработки
-    userData.value = {
-      id: `dev_${Date.now()}`,
-      username: 'Developer',
-      firstName: 'Dev'
-    }
+  } catch (error) {
+    console.error('Error initializing user:', error)
+    createGuestUser()
   }
-  
-  console.log('User initialized:', userData.value)
+}
+
+// Создание гостевого пользователя
+const createGuestUser = () => {
+  const guestId = `guest_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+  userData.value = {
+    id: guestId,
+    username: `Guest_${Math.floor(Math.random() * 10000)}`,
+    firstName: 'Guest'
+  }
+  console.log('Guest user created:', userData.value)
 }
 
 // Инициализация игры
@@ -212,23 +235,40 @@ const startCountdown = () => {
 
 // Загрузка лучшего счета
 const loadBestScore = async () => {
+  console.log('Loading best score for user:', userData.value.id)
   try {
     // Сначала пробуем из localStorage
-    const savedScore = localStorage.getItem('catch_game_best_score')
+    const savedScore = localStorage.getItem(`catch_game_best_score_${userData.value.id}`)
     if (savedScore) {
-      bestScore.value = parseInt(savedScore) || 0
+      const parsedScore = parseInt(savedScore)
+      if (!isNaN(parsedScore)) {
+        bestScore.value = parsedScore
+        console.log('Loaded from localStorage:', bestScore.value)
+      }
     }
     
     // Затем из Firebase для данного пользователя
-    if (userData.value.id) {
-      const docRef = doc(db, 'users', userData.value.id)
-      const docSnap = await getDoc(docRef)
-      
-      if (docSnap.exists()) {
-        const data = docSnap.data()
-        if (data.bestScore && data.bestScore > bestScore.value) {
-          bestScore.value = data.bestScore
+    if (userData.value.id && !userData.value.id.startsWith('guest_')) {
+      try {
+        const docRef = doc(db, 'users', userData.value.id)
+        const docSnap = await getDoc(docRef)
+        
+        if (docSnap.exists()) {
+          const data = docSnap.data()
+          console.log('Firebase user data:', data)
+          
+          if (data.bestScore && data.bestScore > bestScore.value) {
+            bestScore.value = data.bestScore
+            // Обновляем localStorage
+            localStorage.setItem(`catch_game_best_score_${userData.value.id}`, bestScore.value.toString())
+            console.log('Updated from Firebase:', bestScore.value)
+          }
+        } else {
+          console.log('No user document in Firebase, creating new')
         }
+      } catch (firebaseError) {
+        console.error('Firebase error loading score:', firebaseError)
+        // Игнорируем ошибки Firebase, продолжаем с localStorage
       }
     }
   } catch (error) {
@@ -238,54 +278,84 @@ const loadBestScore = async () => {
 
 // Сохранение счета в Firebase
 const saveScoreToFirebase = async () => {
+  console.log('Saving score to Firebase...')
+  
+  if (!userData.value.id) {
+    console.log('No user ID, cannot save to Firebase')
+    return
+  }
+  
+  // Для гостей не сохраняем в Firebase, только localStorage
+  if (userData.value.id.startsWith('guest_')) {
+    console.log('Guest user, saving to localStorage only')
+    localStorage.setItem(`catch_game_best_score_${userData.value.id}`, score.value.toString())
+    return
+  }
+  
   try {
-    if (!userData.value.id) return
+    // Подготовка данных пользователя
+    const userDocData = {
+      userId: userData.value.id,
+      username: userData.value.username,
+      firstName: userData.value.firstName || 'Unknown',
+      bestScore: score.value,
+      lastScore: score.value,
+      lastPlayed: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }
     
+    // Добавляем gamesPlayed и totalScore если есть
     const userRef = doc(db, 'users', userData.value.id)
     const userSnap = await getDoc(userRef)
     
-    // Обновляем лучший счет пользователя
-    if (score.value > bestScore.value) {
-      bestScore.value = score.value
-      localStorage.setItem('catch_game_best_score', score.value.toString())
-      
-      await setDoc(userRef, {
-        userId: userData.value.id,
-        username: userData.value.username,
-        firstName: userData.value.firstName,
-        bestScore: score.value,
-        lastScore: score.value,
-        gamesPlayed: userSnap.exists() ? (userSnap.data().gamesPlayed || 0) + 1 : 1,
-        totalScore: userSnap.exists() ? (userSnap.data().totalScore || 0) + score.value : score.value,
-        updatedAt: serverTimestamp()
-      }, { merge: true })
+    if (userSnap.exists()) {
+      const existingData = userSnap.data()
+      userDocData.gamesPlayed = (existingData.gamesPlayed || 0) + 1
+      userDocData.totalScore = (existingData.totalScore || 0) + score.value
+    } else {
+      userDocData.gamesPlayed = 1
+      userDocData.totalScore = score.value
+      userDocData.createdAt = serverTimestamp()
     }
     
-    // Сохраняем каждый результат в историю
+    // Сохраняем/обновляем данные пользователя
+    console.log('Saving user data:', userDocData)
+    await setDoc(userRef, userDocData, { merge: true })
+    
+    // Сохраняем запись о текущей игре в коллекцию scores
     const scoreData = {
       userId: userData.value.id,
       username: userData.value.username,
       score: score.value,
+      timestamp: Date.now(),
       date: new Date().toISOString(),
-      timestamp: Date.now()
+      createdAt: serverTimestamp()
     }
     
-    // Добавляем в коллекцию scores
+    console.log('Saving score record:', scoreData)
     await addDoc(collection(db, 'scores'), scoreData)
     
-    // Также добавляем в историю пользователя
-    await addDoc(collection(db, `users/${userData.value.id}/history`), scoreData)
+    // Также сохраняем в историю пользователя
+    const userHistoryRef = collection(db, `users/${userData.value.id}/history`)
+    await addDoc(userHistoryRef, scoreData)
     
-    console.log('Score saved to Firebase')
+    // Сохраняем в localStorage
+    localStorage.setItem(`catch_game_best_score_${userData.value.id}`, score.value.toString())
+    
+    console.log('Score successfully saved to Firebase!')
     
   } catch (error) {
     console.error('Error saving score to Firebase:', error)
+    console.error('Error details:', error.message, error.code)
+    
+    // В случае ошибки Firebase, хотя бы сохраняем в localStorage
+    localStorage.setItem(`catch_game_best_score_${userData.value.id}`, score.value.toString())
   }
 }
 
 // Начало игры
 const startGame = async () => {
-  await loadBestScore()
+  console.log('Starting game for user:', userData.value.username)
   
   time.value = 30
   score.value = 0
@@ -375,18 +445,28 @@ const updateGame = () => {
 
 // Конец игры
 const endGame = async () => {
+  console.log('Game over. Score:', score.value, 'Best:', bestScore.value)
+  
   gameOver.value = true
   clearTimers()
   
   // Проверяем, новый ли это рекорд
   if (score.value > bestScore.value) {
+    console.log('New record detected!')
     isNewRecord.value = true
-    await saveScoreToFirebase()
+    bestScore.value = score.value
+    
+    try {
+      await saveScoreToFirebase()
+    } catch (error) {
+      console.error('Error saving new record:', error)
+    }
   }
 }
 
 // Перезапуск
 const restartGame = () => {
+  console.log('Restarting game...')
   clearTimers()
   gameOver.value = false
   items.value = []
@@ -441,42 +521,26 @@ const updateBucketPosition = (clientX, clientY) => {
   bucketPosition.value = { x: newX, y: newY }
 }
 
-// Получение всех рекордов пользователя
-const getUserRecords = async () => {
-  try {
-    if (!userData.value.id) return []
-    
-    const scoresRef = collection(db, 'scores')
-    const q = query(
-      scoresRef, 
-      where('userId', '==', userData.value.id),
-      orderBy('score', 'desc'),
-      limit(10)
-    )
-    
-    // Здесь можно получить и отобразить все рекорды
-    // const querySnapshot = await getDocs(q)
-    // const records = querySnapshot.docs.map(doc => doc.data())
-    // return records
-    
-  } catch (error) {
-    console.log('Error getting user records:', error)
-    return []
-  }
-}
-
 // Жизненный цикл
-onMounted(() => {
-  initUser()
+onMounted(async () => {
+  console.log('Game mounted')
+  
+  // Инициализируем пользователя
+  await initUser()
+  
+  // Инициализируем игру
   initGame()
   window.addEventListener('resize', initGame)
-  setTimeout(startCountdown, 500)
   
-  // Загружаем рекорды при старте
-  loadBestScore()
+  // Даем время на инициализацию и начинаем отсчет
+  setTimeout(() => {
+    console.log('Starting countdown...')
+    startCountdown()
+  }, 1000)
 })
 
 onUnmounted(() => {
+  console.log('Game unmounted')
   clearTimers()
   window.removeEventListener('resize', initGame)
 })
@@ -566,6 +630,18 @@ onUnmounted(() => {
   font-size: 14px;
   color: #ffd700;
   font-weight: 500;
+}
+
+.user-info {
+  position: absolute;
+  top: 10px;
+  right: 15px;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.7);
+  font-weight: 500;
+  background: rgba(0, 0, 0, 0.5);
+  padding: 4px 10px;
+  border-radius: 12px;
 }
 
 .time-bar {
@@ -773,5 +849,11 @@ onUnmounted(() => {
   .best-record { font-size: 20px; }
   .new-record { font-size: 24px; }
   .game-over button { padding: 12px 28px; font-size: 16px; }
+  .user-info {
+    font-size: 12px;
+    top: 5px;
+    right: 10px;
+    padding: 3px 8px;
+  }
 }
 </style>
